@@ -33,40 +33,56 @@ class StockMonitorRequests(object):
         self.thread_lock = threading.Lock()
         pass
 
-    def start_stock_thread(self, symbol, fake_data=None):
+    def start_stock_thread(self, symbol, refresh=5.0):
 
-        t = threading.Thread(target=self.make_stock_requests, args=[symbol, 5.0], 
-                             kwargs={'fake_data': fake_data})
+        t = threading.Thread(target=self.make_stock_requests, args=[symbol, refresh])
         t.daemon = True
         t.start()
 
-    def make_stock_requests(self, symbol, refresh, fake_data=None):
-
-
-        if not fake_data:
-            response = requests.get(
-                url='http://www.alphavantage.co/query',
-                params={'symbol': symbol, 'function': 'GLOBAL_QUOTE', 'apikey': self.key}
-            )
-            current_data = response.json()['Realtime Global Securities Quote']
-
-        else:
-            fake_data = json.loads(fake_data)
-            data = fake_data
+    def get_graph_data(self, symbol, interval, days):
 
         response = requests.get(
             url='http://www.alphavantage.co/query',
             params={'function':'TIME_SERIES_INTRADAY',
                     'symbol': symbol,
                     'outputsize':'full',
-                    'interval':'60min',
+                    'interval':interval,
                     'apikey': self.key}
         )
 
+        interval_data = response.json()['Time Series (%s)' % interval]
+
+        time_fmt = '%Y-%m-%d %H:%M:%S'
+
+        interval_data = sorted(
+            interval_data.iteritems(), 
+            key=lambda t: datetime.datetime.strptime(t[0], time_fmt)
+        )
+
+        min_day = datetime.datetime.today() - datetime.timedelta(days=days)
+
+        interval_data = [ d for d in interval_data if datetime.datetime.strptime(d[0], time_fmt) > min_day ]
+
+        avg = lambda d: (float(d[1]['2. high']) + float(d[1]['3. low'])) / 2
+        date = lambda d: datetime.datetime.strptime(d[0], time_fmt).strftime('%b %d')
+
+        interval_data = [ {'price': avg(d), 'date': date(d) } for d in interval_data ]
+
+        return interval_data
+
+
+
+    def make_stock_requests(self, symbol, refresh):
+
+        response = requests.get(
+            url='http://www.alphavantage.co/query',
+            params={'symbol': symbol, 'function': 'GLOBAL_QUOTE', 'apikey': self.key}
+        )
+        current_data = response.json()['Realtime Global Securities Quote']
 
         val_fmt = '$%.2f'
         tid = threading.current_thread().name
-        # self.thread_lock.acquire()
+
         ui_queue.put((tid, 'create_row',
             { 'symbol': current_data['01. Symbol'], 
               'price': val_fmt % float(current_data['03. Latest Price']),
@@ -75,25 +91,17 @@ class StockMonitorRequests(object):
               'day_range': current_data['01. Symbol'],
               'week_range': current_data['01. Symbol'] })
         )
-        # self.thread_lock.release()
 
+        interval_data = self.get_graph_data(symbol, interval='60min', days=30)
+        ui_queue.put((tid, 'build_graph_month', {'prices_dates': interval_data}))
 
+        interval_data = self.get_graph_data(symbol, interval='30min', days=7)
+        ui_queue.put((tid, 'build_graph_week', {'prices_dates': interval_data}))
 
-        monthly_data = response.json()['Time Series (60min)']
-
-        time_fmt = '%Y-%m-%d %H:%M:%S'
-        monthly_data = sorted(
-            monthly_data.iteritems(), 
-            key=lambda t: datetime.datetime.strptime(t[0], time_fmt)
-        )
-
-        avg = lambda d: (float(d[1]['2. high']) + float(d[1]['3. low'])) / 2
-        date = lambda d: datetime.datetime.strptime(d[0], time_fmt).strftime('%b %d')
-
-        monthly_data = [ {'price': avg(d), 'date': date(d) } for d in monthly_data ]
-        print monthly_data[0]
-        ui_queue.put((tid, 'build_graph', { 'prices_dates': monthly_data}))
-
+        interval_data = self.get_graph_data(symbol, interval='5min', days=1)
+        ui_queue.put((tid, 'build_graph_day', 
+                     {'prices_dates': interval_data,
+                      'growing_graph_size': 100}))
 
         positive = True
         
@@ -206,7 +214,7 @@ class StockWidgets(object):
         self.day_range['bg'] = green
         self.week_range['bg'] = green
 
-    def build_graph(self, graph, prices_dates):
+    def build_graph(self, graph, prices_dates, growing_graph_size=None):
         graph.update()
         min_w = 15
         min_h = 20
@@ -240,13 +248,15 @@ class StockWidgets(object):
         max_hw = max_h - min_h
         high_low = high - low
         calc_y = lambda price: (1-(float(price-low) / high_low)) * max_hw + min_h
-        width = float(max_w-min_w) / (len(prices) - 1)
+        
+        graph_size = len(prices) if growing_graph_size is None else growing_graph_size
+        width = float(max_w-min_w) / (graph_size - 1)
 
         x = min_w
         y = calc_y(prices[0])
 
         
-        line_repeat = [(len(prices) / 4) * i for i in [1,2,3,4]][:-1]
+        line_repeat = [(graph_size / 4) * i for i in [1,2,3,4]][:-1]
         count = 0
         trend_coords = [min_w, max_h, x, y]
         for price in prices[1:]:
@@ -279,17 +289,13 @@ class StockWidgets(object):
         )
 
 
-
-
-
-
 class StockMonitorUI(object):
 
     def __init__(self, root):
         self.root = root
         self.row = 0
 
-        for x in range(0,7):
+        for x in range(0,6):
             self.root.grid_columnconfigure(x, weight=1)
 
         self.root.grid()
@@ -323,7 +329,8 @@ class StockMonitorUI(object):
     def create_row(self, symbol, price, change, percent_change, day_range, week_range):
 
         self.row += 1
-        print self.row
+        
+        graph_height = 100
         self.root.symbol = Label(self.root, text=symbol, pady=10)
         self.root.symbol.grid(row=self.row, column=0, sticky=N+E+S+W)
 
@@ -342,13 +349,13 @@ class StockMonitorUI(object):
         self.root.week_range = Label(self.root, text=week_range)
         self.root.week_range.grid(row=self.row, column=5, sticky=N+E+S+W)
 
-        self.root.graph_day = Canvas(height=150)
+        self.root.graph_day = Canvas(height=graph_height)
         self.root.graph_day.grid(columnspan=2, row=self.row+1, column=0, sticky=N+E+S+W)
 
-        self.root.graph_week = Canvas(height=150)
+        self.root.graph_week = Canvas(height=graph_height)
         self.root.graph_week.grid(columnspan=2, row=self.row+1, column=2, sticky=N+E+S+W)
 
-        self.root.graph_month = Canvas(height=150)
+        self.root.graph_month = Canvas(height=graph_height)
         self.root.graph_month.grid(columnspan=2, row=self.row+1, column=4, sticky=N+E+S+W)
 
         sw = StockWidgets(self.row, self.root.symbol, self.root.price, self.root.change, 
@@ -370,8 +377,12 @@ def thread_controller(ui):
             stock_rows[tid] = stock_widget
         elif func == 'update_values':
             stock_rows[tid].update_values(**kwargs)
-        elif func == 'build_graph':
+        elif func == 'build_graph_month':
             stock_rows[tid].build_graph(stock_rows[tid].graph_month, **kwargs)
+        elif func == 'build_graph_week':
+            stock_rows[tid].build_graph(stock_rows[tid].graph_week, **kwargs)
+        elif func == 'build_graph_day':
+            stock_rows[tid].build_graph(stock_rows[tid].graph_day, **kwargs)
     except Queue.Empty:
         pass
 
