@@ -5,24 +5,21 @@ import requests
 import copy
 import Queue
 import datetime
+import colorsys
 key = 'H29RZIPMQRR1LCH9'
 
 import json
-Ford = """
-[{
-    "symbol": "F",
-    "marketPercent": 0.01555,
-    "bidSize": 0,
-    "bidPrice": 0,
-    "askSize": 0,
-    "askPrice": 0,
-    "volume": 469462,
-    "lastSalePrice": 11.125,
-    "lastSaleSize": 500,
-    "lastSaleTime": 1497038388608,
-    "lastUpdated": 1497038400002
-}]
-"""
+
+color_red = '#894747'
+color_green = '#4c8946'
+update_red = '#7c3f3f'
+update_green = '#3f7c48'
+header_grey = '#CFCFCF'
+
+graph_colors = '#afafaf'
+
+text_color = 'white'
+
 
 class StockMonitorRequests(object):
 
@@ -39,7 +36,7 @@ class StockMonitorRequests(object):
         t.daemon = True
         t.start()
 
-    def get_graph_data(self, symbol, interval, days):
+    def get_graph_data(self, symbol, interval, days, time_format):
 
         response = requests.get(
             url='http://www.alphavantage.co/query',
@@ -59,12 +56,13 @@ class StockMonitorRequests(object):
             key=lambda t: datetime.datetime.strptime(t[0], time_fmt)
         )
 
-        min_day = datetime.datetime.today() - datetime.timedelta(days=days)
 
+        min_day = datetime.datetime.strptime(interval_data[-1][0], time_fmt) - datetime.timedelta(days=days)
+        print min_day
         interval_data = [ d for d in interval_data if datetime.datetime.strptime(d[0], time_fmt) > min_day ]
 
-        avg = lambda d: (float(d[1]['2. high']) + float(d[1]['3. low'])) / 2
-        date = lambda d: datetime.datetime.strptime(d[0], time_fmt).strftime('%b %d')
+        avg = lambda d: round((float(d[1]['2. high']) + float(d[1]['3. low'])) / 2, 2)
+        date = lambda d: datetime.datetime.strptime(d[0], time_fmt).strftime(time_format)
 
         interval_data = [ {'price': avg(d), 'date': date(d) } for d in interval_data ]
 
@@ -87,25 +85,27 @@ class StockMonitorRequests(object):
             { 'symbol': current_data['01. Symbol'], 
               'price': val_fmt % float(current_data['03. Latest Price']),
               'change': val_fmt % float(current_data['08. Price Change']),
-              'percent_change': current_data['09. Price Change Percentage'], 
-              'day_range': current_data['01. Symbol'],
-              'week_range': current_data['01. Symbol'] })
+              'percent_change': current_data['09. Price Change Percentage']})
         )
 
-        interval_data = self.get_graph_data(symbol, interval='60min', days=30)
-        ui_queue.put((tid, 'build_graph_month', {'prices_dates': interval_data}))
+        # month_data = self.get_graph_data(symbol, interval='60min', days=30)
+        # ui_queue.put((tid, 'build_graph_month', {'prices_dates': month_data}))
 
-        interval_data = self.get_graph_data(symbol, interval='30min', days=7)
-        ui_queue.put((tid, 'build_graph_week', {'prices_dates': interval_data}))
+        week_data = self.get_graph_data(symbol, interval='30min', days=7, time_format='%a')
+        ui_queue.put((tid, 'build_graph_week', {'prices_dates': week_data}))
 
-        interval_data = self.get_graph_data(symbol, interval='5min', days=1)
+        day_data = self.get_graph_data(symbol, interval='5min', days=1, time_format='%I')
+        print len(day_data)
         ui_queue.put((tid, 'build_graph_day', 
-                     {'prices_dates': interval_data,
-                      'growing_graph_size': 100}))
+                     {'prices_dates': day_data,
+                      'growing_graph_size': 79}))
 
-        positive = True
+        color = color_green if float(current_data['08. Price Change']) > 0 else color_green
+        ui_queue.put((tid, 'set_color', {'color': color}))
         
         a = 1
+        prev_time = datetime.datetime.today()
+
         while True:
 
             response = requests.get(
@@ -117,49 +117,52 @@ class StockMonitorRequests(object):
 
             price_change = float(data['08. Price Change'])
 
-            # if positive is True and price_change < 0:
-            #     stock_widgets.set_red()
-            # elif positive is False and price_change >= 0:
-            #     stock_widgets.set_green()
+            if color == color_green and price_change < 0:
+                color = color_red
+                ui_queue.put((tid, 'set_color', {'color': color}))
+            elif color == color_red and price_change >= 0:
+                color = color_green
+                ui_queue.put((tid, 'set_color', {'color': color}))
 
             a += 1
             ui_queue.put((tid, 'update_values', 
-                { 'price': val_fmt % float(data['03. Latest Price']),
+                { 'price': a,
                   'change': val_fmt % float(data['08. Price Change']),
                   'percent_change': data['09. Price Change Percentage']
                 })
             )
 
+            if datetime.datetime.today() > prev_time + datetime.timedelta(seconds=300):
+                prev_time = prev_time + datetime.timedelta(seconds=10)
+                day_data = self.get_graph_data(symbol, interval='5min', days=1, time_format='%I')
+                ui_queue.put((tid, 'build_graph_day', 
+                             {'prices_dates': day_data,
+                              'growing_graph_size': 79}))
+            
             sleep(refresh)
 
 class StockWidgets(object):
 
     def __init__(self, row, symbol, price, change, percent_change,
-                 day_range, week_range, graph_day, graph_week, graph_month):
+                 graph_day, graph_week, graph_month=None):
         
         self.row = row
         self.symbol = symbol
         self.price = price
         self.change = change
         self.percent_change = percent_change
-        self.day_range = day_range
-        self.week_range = week_range
         self.graph_day = graph_day
         self.graph_week = graph_week
         self.graph_month = graph_month
 
-        # self.build_graph(self.graph_day)
-        # self.build_graph(self.graph_week)
-        # self.build_graph(self.graph_month)
-
         self.graph_day.update()
         self.prev_width_day = self.graph_day.winfo_width()
         self.prev_width_week = self.graph_day.winfo_width()
-        self.prev_width_month = self.graph_day.winfo_width()
+        # self.prev_width_month = self.graph_day.winfo_width()
 
         self.graph_day.bind('<Configure>', self.scale_day)
         self.graph_week.bind('<Configure>', self.scale_week)
-        self.graph_month.bind('<Configure>', self.scale_month)
+        # self.graph_month.bind('<Configure>', self.scale_month)
 
     def scale_day(self, event):
         # scale = event.width/float(self.root.graph.winfo_width())
@@ -181,68 +184,78 @@ class StockWidgets(object):
     def update_values(self, symbol=None, price=None, change=None, percent_change=None, 
                       day_range=None, week_range=None):
 
+        def change_notification(widget, pos):
+
+            def reset_notification(widget, curr_bg, curr_fg):
+                widget['bg'] = curr_bg
+                widget['fg'] = curr_fg
+
+            curr_bg = widget['bg']
+            curr_fg = widget['fg']
+
+            widget['bg'] = update_green if pos else update_red
+            widget['fg'] = 'white'
+
+            widget.after(80, reset_notification, widget, curr_bg, curr_fg)
+
         if symbol is not None:
             self.symbol['text'] = symbol
         if price is not None:
+            pos = True if price > self.price['text'] else False
             self.price['text'] = price
-        if change is not None:
             self.change['text'] = change
-        if percent_change is not None:
             self.percent_change['text'] = percent_change
+            change_notification(self.price, pos)
+            change_notification(self.change, pos)
+            change_notification(self.percent_change, pos)
 
-    def set_red(self):
 
-        red = '#FF0516'
 
-        self.symbol['bg'] = red
-        self.price['bg'] = red
-        self.change['bg'] = red
-        self.percent_change['bg'] = red
-        # self.graph['bg'] = red
-        self.day_range['bg'] = red
-        self.week_range['bg'] = red
+    def set_color(self, color):
 
-    def set_green(self):
-
-        green = '#1EFF05'
-
-        self.symbol['bg'] = green
-        self.price['bg'] = green
-        self.change['bg'] = green
-        self.percent_change['bg'] = green
-        # self.graph['bg'] = green
-        self.day_range['bg'] = green
-        self.week_range['bg'] = green
+        self.symbol['bg'] = color
+        self.price['bg'] = color
+        self.change['bg'] = color
+        self.percent_change['bg'] = color
+        self.graph_day['bg'] = color 
+        self.graph_week['bg'] = color 
+        self.symbol.update()
 
     def build_graph(self, graph, prices_dates, growing_graph_size=None):
+        graph.delete('all')
         graph.update()
         min_w = 15
         min_h = 20
         max_w = graph.winfo_width() - 10
         max_h = graph.winfo_height() - 20
-        line_width = 2
-        line_color = '#737373'
+        line_width = 1
+
         low_line = graph.create_line(
             min_w, max_h, max_w, max_h, 
-
+            fill=graph_colors, width=line_width, tags='high', dash=(4,4)
         )
         high_line = graph.create_line(
             min_w, min_h, max_w, min_h, 
-            fill=line_color, width=line_width, tags='high', dash=(4,4)
+            fill=graph_colors, width=line_width, tags='high', dash=(4,4)
         )
-        # import random
-        # numbers = random.sample(range(50, 120),10)
 
         prices = [ p['price'] for p in prices_dates ]
 
         high = max(prices)
         low = min(prices)
 
+        percent_diff = (high - low) / high
+        if percent_diff < 0.012:
+            midpoint = ((high - low) / 2) + low
+            high = round(midpoint + 0.006 * midpoint, 2)
+            low = round(midpoint - 0.006 * midpoint, 2)
+
+
         low_text = graph.create_text(
-            min_w, max_h+min_h-2, anchor=SW, text=str(low), fill=line_color
+            min_w, max_h+min_h-2, anchor=SW, text=str(low), fill=graph_colors
         )
         high_text = graph.create_text(
-            min_w, 2, anchor=NW, text=str(high), fill=line_color
+            min_w, 2, anchor=NW, text=str(high), fill=graph_colors
         )
 
         max_hw = max_h - min_h
@@ -258,7 +271,7 @@ class StockWidgets(object):
         
         line_repeat = [(graph_size / 4) * i for i in [1,2,3,4]][:-1]
         count = 0
-        trend_coords = [min_w, max_h, x, y]
+        trend_coords = [(x, y)]
         for price in prices[1:]:
 
             x += width
@@ -269,24 +282,29 @@ class StockWidgets(object):
                 # print count
                 vertical_line = graph.create_line(
                     x, max_h, x, min_h, 
-                    fill=line_color, width=1, tags='high'
+                    fill=graph_colors, width=1, tags='high'
                 )
 
                 line_time = graph.create_text(
                     x, max_h+2,
-                    fill=line_color, anchor=N, text=prices_dates[count]['date']
+                    fill=graph_colors, anchor=N, text=prices_dates[count]['date']
                 )
 
-            trend_coords += [round(x), round(y)]
+            trend_coords += [(round(x), round(y))]
 
             count += 1
 
 
-        trend_coords += [x, max_h]
+        # trend_coords += [x, max_h]
+        p_x, p_y = trend_coords[0]
+        for x, y in trend_coords[1:]:
+            graph.create_line(p_x, p_y, x, y, fill=text_color)
+            p_x = x
+            p_y = y
 
-        trend_line = graph.create_polygon(
-            *trend_coords, fill='blue', width=line_width, tags='high'
-        )
+        # trend_line = graph.create_polygon(
+        #     *trend_coords, fill='#E0E0E0', outline='#C9C9C9', width=1, tags='high'
+        # )
 
 
 class StockMonitorUI(object):
@@ -295,7 +313,9 @@ class StockMonitorUI(object):
         self.root = root
         self.row = 0
 
-        for x in range(0,6):
+        # self.root.minsize(width=1000, height=800)
+        # self.root.maxsize(width=1000, height=800)
+        for x in range(0,4):
             self.root.grid_columnconfigure(x, weight=1)
 
         self.root.grid()
@@ -306,63 +326,58 @@ class StockMonitorUI(object):
 
         padx = 20
         pady = 5
-        bg = '#00E5D3'
+        bg = header_grey
 
-        self.root.symbol = Label(self.root, text='symbol', padx=padx, pady=pady, bg=bg)
+        self.root.symbol = Label(self.root, text='sym', padx=padx, pady=pady, bg=bg)
         self.root.symbol.grid(row=0, column=0, sticky=N+E+S+W)
         
         self.root.price = Label(self.root, text='price', padx=padx, pady=pady, bg=bg)
         self.root.price.grid(row=0, column=1, sticky=N+E+S+W)
 
-        self.root.change = Label(self.root, text='change', padx=padx, pady=pady, bg=bg)
+        self.root.change = Label(self.root, text='day', padx=padx, pady=pady, bg=bg)
         self.root.change.grid(row=0, column=2, sticky=N+E+S+W)
 
-        self.root.percent_change = Label(self.root, text=r'%change', padx=padx, pady=pady, bg=bg)
+        self.root.percent_change = Label(self.root, text='week', padx=padx, pady=pady, bg=bg)
         self.root.percent_change.grid(row=0, column=3, sticky=N+E+S+W)
 
-        self.root.day_range = Label(self.root, text='day range', padx=padx, pady=pady, bg=bg)
-        self.root.day_range.grid(row=0, column=4, sticky=N+E+S+W)
-
-        self.root.week_range = Label(self.root, text='week range', padx=padx, pady=pady, bg=bg)
-        self.root.week_range.grid(row=0, column=5, sticky=N+E+S+W)
-
-    def create_row(self, symbol, price, change, percent_change, day_range, week_range):
+    def create_row(self, symbol, price, change, percent_change):
 
         self.row += 1
         
         graph_height = 100
-        self.root.symbol = Label(self.root, text=symbol, pady=10)
-        self.root.symbol.grid(row=self.row, column=0, sticky=N+E+S+W)
+        self.root.symbol = Label(self.root, text=symbol, fg=text_color)
+        self.root.symbol.grid(row=self.row, column=0, rowspan=3, sticky=N+E+S+W)
+        self.root.grid_columnconfigure(0, weight=0)
 
-        self.root.price = Label(self.root, text=price)
+        self.root.price = Label(self.root, text=price, fg=text_color)
         self.root.price.grid(row=self.row, column=1, sticky=N+E+S+W)
+        self.root.grid_columnconfigure(1, weight=0)
 
-        self.root.change = Label(self.root, text=change)
-        self.root.change.grid(row=self.row, column=2, sticky=N+E+S+W)
+        self.root.change = Label(self.root, text=change, fg=text_color)
+        self.root.change.grid(row=self.row+1, column=1, sticky=N+E+S+W)
 
-        self.root.percent_change = Label(self.root, text=percent_change)
-        self.root.percent_change.grid(row=self.row, column=3, sticky=N+E+S+W)
+        self.root.percent_change = Label(self.root, text=percent_change, fg=text_color)
+        self.root.percent_change.grid(row=self.row+2, column=1, sticky=N+E+S+W)
 
-        self.root.day_range = Label(self.root, text=day_range)
-        self.root.day_range.grid(row=self.row, column=4, sticky=N+E+S+W)
+        # self.root.day_range = Label(self.root, text=day_range)
+        # self.root.day_range.grid(row=self.row, column=4, sticky=N+E+S+W)
 
-        self.root.week_range = Label(self.root, text=week_range)
-        self.root.week_range.grid(row=self.row, column=5, sticky=N+E+S+W)
+        # self.root.week_range = Label(self.root, text=week_range)
+        # self.root.week_range.grid(row=self.row, column=5, sticky=N+E+S+W)
 
-        self.root.graph_day = Canvas(height=graph_height)
-        self.root.graph_day.grid(columnspan=2, row=self.row+1, column=0, sticky=N+E+S+W)
+        self.root.graph_day = Canvas(height=graph_height, highlightthickness=0)
+        self.root.graph_day.grid(row=self.row, column=2, rowspan=3, sticky=N+E+S+W)
 
-        self.root.graph_week = Canvas(height=graph_height)
-        self.root.graph_week.grid(columnspan=2, row=self.row+1, column=2, sticky=N+E+S+W)
+        self.root.graph_week = Canvas(height=graph_height, highlightthickness=0)
+        self.root.graph_week.grid(row=self.row, column=3, rowspan=3, sticky=N+E+S+W)
 
-        self.root.graph_month = Canvas(height=graph_height)
-        self.root.graph_month.grid(columnspan=2, row=self.row+1, column=4, sticky=N+E+S+W)
+        # self.root.graph_month = Canvas(height=graph_height)
+        # self.root.graph_month.grid(columnspan=2, row=self.row+1, column=4, sticky=N+E+S+W)
 
         sw = StockWidgets(self.row, self.root.symbol, self.root.price, self.root.change, 
-                          self.root.percent_change, self.root.day_range, self.root.week_range,
-                          self.root.graph_day, self.root.graph_week, self.root.graph_month)
+                          self.root.percent_change, self.root.graph_day, self.root.graph_week)
 
-        self.row += 1
+        self.row += 3
         
         return sw
 
@@ -383,6 +398,10 @@ def thread_controller(ui):
             stock_rows[tid].build_graph(stock_rows[tid].graph_week, **kwargs)
         elif func == 'build_graph_day':
             stock_rows[tid].build_graph(stock_rows[tid].graph_day, **kwargs)
+        elif func == 'set_color':
+            print 'hey'
+            print kwargs
+            stock_rows[tid].set_color(**kwargs)
     except Queue.Empty:
         pass
 
@@ -396,8 +415,9 @@ if __name__ == '__main__':
 
     smr = StockMonitorRequests(ui, key)
     smr.start_stock_thread('MSFT')
-    #smr.start_stock_thread('ATVI')
-
+    smr.start_stock_thread('ATVI')
+    smr.start_stock_thread('NTDOY')
+    smr.start_stock_thread('SNE')
     # smr.start_stock_thread('NTDOY')
     # smr.start_stock_thread('ATVI')
     # smr.start_stock_thread('SNE')
