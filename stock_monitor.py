@@ -37,16 +37,21 @@ class StockMonitorRequests(object):
 
     def get_graph_data(self, symbol, interval, days, time_format):
 
-        response = requests.get(
-            url='http://www.alphavantage.co/query',
-            params={'function':'TIME_SERIES_INTRADAY',
-                    'symbol': symbol,
-                    'outputsize':'full',
-                    'interval':interval,
-                    'apikey': self.key}
-        )
+        while True:
+            try: 
+                response = requests.get(
+                    url='http://www.alphavantage.co/query',
+                    params={'function':'TIME_SERIES_INTRADAY',
+                            'symbol': symbol,
+                            'outputsize':'full',
+                            'interval':interval,
+                            'apikey': self.key}
+                )
+                interval_data = response.json()['Time Series (%s)' % interval]
 
-        interval_data = response.json()['Time Series (%s)' % interval]
+            except:
+                continue
+            break
 
         time_fmt = '%Y-%m-%d %H:%M:%S'
 
@@ -71,11 +76,18 @@ class StockMonitorRequests(object):
 
     def make_stock_requests(self, symbol, refresh):
 
-        response = requests.get(
-            url='http://www.alphavantage.co/query',
-            params={'symbol': symbol, 'function': 'GLOBAL_QUOTE', 'apikey': self.key}
-        )
-        current_data = response.json()['Realtime Global Securities Quote']
+        while True:
+            try: 
+                response = requests.get(
+                    url='http://www.alphavantage.co/query',
+                    params={'symbol': symbol, 'function': 'GLOBAL_QUOTE', 'apikey': self.key}
+                )
+                current_data = response.json()['Realtime Global Securities Quote']
+                print symbol, response.status_code
+            except Exception as e:
+                print e
+                continue
+            break
 
         val_fmt = '$%.2f'
         tid = threading.current_thread().name
@@ -106,35 +118,38 @@ class StockMonitorRequests(object):
         prev_time = datetime.datetime.today()
 
         while True:
+            try:
+                response = requests.get(
+                    'http://www.alphavantage.co/query',
+                    params={'symbol': symbol, 'function': 'GLOBAL_QUOTE', 'apikey': self.key}
+                )
+                data = response.json()['Realtime Global Securities Quote']
 
-            response = requests.get(
-                'http://www.alphavantage.co/query',
-                params={'symbol': symbol, 'function': 'GLOBAL_QUOTE', 'apikey': self.key}
-            )
-            data = response.json()['Realtime Global Securities Quote']
+                price_change = float(data['08. Price Change'])
 
-            price_change = float(data['08. Price Change'])
+                if color == color_green and price_change < 0:
+                    color = color_red
+                    ui_queue.put((tid, StockWidgets.set_color, {'color': color}))
+                elif color == color_red and price_change >= 0:
+                    color = color_green
+                    ui_queue.put((tid, StockWidgets.set_color, {'color': color}))
 
-            if color == color_green and price_change < 0:
-                color = color_red
-                ui_queue.put((tid, StockWidgets.set_color, {'color': color}))
-            elif color == color_red and price_change >= 0:
-                color = color_green
-                ui_queue.put((tid, StockWidgets.set_color, {'color': color}))
+                a += 1
+                ui_queue.put((tid, StockWidgets.update_values, 
+                    { 'price': a,
+                      'change': val_fmt % float(data['08. Price Change']),
+                      'percent_change': data['09. Price Change Percentage']})
+                )
 
-            a += 1
-            ui_queue.put((tid, StockWidgets.update_values, 
-                { 'price': a,
-                  'change': val_fmt % float(data['08. Price Change']),
-                  'percent_change': data['09. Price Change Percentage']})
-            )
-
-            if datetime.datetime.today() > prev_time + datetime.timedelta(seconds=300):
-                prev_time = prev_time + datetime.timedelta(seconds=300)
-                day_data = self.get_graph_data(symbol, interval='5min', days=1, time_format='%I')
-                ui_queue.put((tid, StockWidgets.build_graph_day, 
-                             {'prices_dates': day_data,
-                              'growing_graph_size': 79}))
+                if datetime.datetime.today() > prev_time + datetime.timedelta(seconds=300):
+                    prev_time = prev_time + datetime.timedelta(seconds=300)
+                    day_data = self.get_graph_data(symbol, interval='5min', days=1, time_format='%I')
+                    ui_queue.put((tid, StockWidgets.build_graph_day, 
+                                 {'prices_dates': day_data,
+                                  'growing_graph_size': 79}))
+            except Exception as e:
+                print e
+                pass
             
             sleep(refresh)
 
