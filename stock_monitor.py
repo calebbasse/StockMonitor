@@ -1,4 +1,5 @@
 from Tkinter import *
+import tkFont
 from time import sleep
 import threading
 import requests
@@ -10,16 +11,26 @@ key = 'H29RZIPMQRR1LCH9'
 
 import json
 
+# color_red = '#894747'
+# color_green = '#4c8946'
+# update_red = '#7c3f3f'
+# update_green = '#3f7c48'
+# header_grey = '#CFCFCF'
+# time_line_color = '#adadad'
+# graph_colors = '#adadad'
+
 color_red = '#894747'
 color_green = '#4c8946'
-update_red = '#7c3f3f'
+update_red = '#9B0F0F'
 update_green = '#3f7c48'
 header_grey = '#CFCFCF'
-time_line_color = '#adadad'
-graph_colors = '#adadad'
+time_line_color = '#707070'
+graph_colors = '#707070'
+background_color_1 = '#040a14'
+background_color_2 = '#080d14'
+text_color = '#cccccc'
 
-text_color = 'white'
-
+graph_height = 100
 
 class StockMonitorRequests(object):
 
@@ -29,9 +40,9 @@ class StockMonitorRequests(object):
         self.thread_lock = threading.Lock()
 
 
-    def start_stock_thread(self, symbol, refresh=5.0):
+    def start_stock_thread(self, symbol, earnings=[], refresh=10.0):
 
-        t = threading.Thread(target=self.make_stock_requests, args=[symbol, refresh])
+        t = threading.Thread(target=self.make_stock_requests, args=[symbol, earnings, refresh])
         t.daemon = True
         t.start()
 
@@ -60,9 +71,10 @@ class StockMonitorRequests(object):
             key=lambda t: datetime.datetime.strptime(t[0], time_fmt)
         )
 
+        ct = datetime.datetime.strptime(interval_data[-1][0], time_fmt)
 
-        min_day = datetime.datetime.strptime(interval_data[-1][0], time_fmt) - datetime.timedelta(days=days)
-        print min_day
+        min_day = datetime.datetime(year=ct.year, month=ct.month, day=ct.day) - datetime.timedelta(days=days)
+
         interval_data = [ d for d in interval_data if datetime.datetime.strptime(d[0], time_fmt) > min_day ]
 
         avg = lambda d: round((float(d[1]['2. high']) + float(d[1]['3. low'])) / 2, 2)
@@ -74,7 +86,7 @@ class StockMonitorRequests(object):
 
 
 
-    def make_stock_requests(self, symbol, refresh):
+    def make_stock_requests(self, symbol, earnings, refresh):
 
         while True:
             try: 
@@ -84,32 +96,38 @@ class StockMonitorRequests(object):
                 )
                 current_data = response.json()['Realtime Global Securities Quote']
                 print symbol, response.status_code
+
+                val_fmt = '$%.2f'
+                tid = threading.current_thread().name
+
+                ui_queue.put((tid, StockMonitorUI.create_row,
+                    { 'symbol': current_data['01. Symbol'], 
+                      'price': val_fmt % float(current_data['03. Latest Price']),
+                      'change': val_fmt % float(current_data['08. Price Change']),
+                      'percent_change': current_data['09. Price Change Percentage']})
+                )
+
+                # month_data = self.get_graph_data(symbol, interval='60min', days=30)
+                # ui_queue.put((tid, 'build_graph_month', {'prices_dates': month_data}))
+
+                week_data = self.get_graph_data(symbol, interval='30min', days=6, time_format='%a')
+                ui_queue.put((tid, StockWidgets.build_graph_week, {'prices_dates': week_data}))
+
+                day_data = self.get_graph_data(symbol, interval='5min', days=0, time_format='%I')
+                ui_queue.put((tid, StockWidgets.build_graph_day, 
+                             {'prices_dates': day_data,
+                              'growing_graph_size': 79}))
+                print len(day_data)
+
+                # for x in earnings:
+                #     ui_queue.put((tid, StockWidgets.build_earnings, 
+                #                  {'name': x[0], 'shares': x[1], 'price': x[2]}))
             except Exception as e:
                 print e
+                sleep(1)
                 continue
             break
 
-        val_fmt = '$%.2f'
-        tid = threading.current_thread().name
-
-        ui_queue.put((tid, StockMonitorUI.create_row,
-            { 'symbol': current_data['01. Symbol'], 
-              'price': val_fmt % float(current_data['03. Latest Price']),
-              'change': val_fmt % float(current_data['08. Price Change']),
-              'percent_change': current_data['09. Price Change Percentage']})
-        )
-
-        # month_data = self.get_graph_data(symbol, interval='60min', days=30)
-        # ui_queue.put((tid, 'build_graph_month', {'prices_dates': month_data}))
-
-        week_data = self.get_graph_data(symbol, interval='30min', days=7, time_format='%a')
-        ui_queue.put((tid, StockWidgets.build_graph_week, {'prices_dates': week_data}))
-
-        day_data = self.get_graph_data(symbol, interval='5min', days=1, time_format='%I')
-        ui_queue.put((tid, StockWidgets.build_graph_day, 
-                     {'prices_dates': day_data,
-                      'growing_graph_size': 79}))
-        print len(day_data)
 
         color = color_green if float(current_data['08. Price Change']) > 0 else color_green
         ui_queue.put((tid, StockWidgets.set_color, {'color': color}))
@@ -136,7 +154,7 @@ class StockMonitorRequests(object):
 
                 a += 1
                 ui_queue.put((tid, StockWidgets.update_values, 
-                    { 'price': a,
+                    { 'price': val_fmt % float(current_data['03. Latest Price']),
                       'change': val_fmt % float(data['08. Price Change']),
                       'percent_change': data['09. Price Change Percentage']})
                 )
@@ -157,7 +175,7 @@ class StockMonitorRequests(object):
 class StockWidgets(object):
 
     def __init__(self, row, symbol, price, change, percent_change,
-                 graph_day, graph_week, graph_month=None):
+                 graph_day, graph_week, earnings=None, graph_month=None):
         
         self.row = row
         self.symbol = symbol
@@ -167,6 +185,8 @@ class StockWidgets(object):
         self.graph_day = graph_day
         self.graph_week = graph_week
         self.graph_month = graph_month
+
+        self.earnings = earnings
 
         self.graph_day.update()
         self.prev_width_day = self.graph_day.winfo_width()
@@ -191,6 +211,17 @@ class StockWidgets(object):
         event.widget.scale('all', 0,0,scale,1)
         return event.width
     
+    def _update_earnings(self, curr_price):
+        curr_price = float(curr_price[curr_price.index('$')+1:])
+        for x in self.earnings:
+            if x['name']['text']:
+                buy_price = x['vals']['price']
+                shares = x['vals']['shares']
+
+                percent_diff = (curr_price - buy_price) / float(buy_price)
+                net = buy_price + (curr_price * percent_diff)
+                x['net']['text'] = '$%.2f' % net
+
     def update_values(self, symbol=None, price=None, change=None, percent_change=None, 
                       day_range=None, week_range=None):
 
@@ -219,15 +250,25 @@ class StockWidgets(object):
             change_notification(self.change, pos)
             change_notification(self.percent_change, pos)
 
+        # self._update_earnings(price)
+
     def set_color(self, color):
 
-        self.symbol['bg'] = color
-        self.price['bg'] = color
-        self.change['bg'] = color
-        self.percent_change['bg'] = color
-        self.graph_day['bg'] = color 
-        self.graph_week['bg'] = color 
+        # self.symbol['bg'] = color
+        # self.price['fg'] = color
+        self.change['fg'] = color
+        self.percent_change['fg'] = color
+        # self.graph_day['bg'] = color 
+        # self.graph_week['bg'] = color 
         self.symbol.update()
+
+    def build_earnings(self, name, shares, price):
+
+        for x in self.earnings:
+            if not x['name']['text']:
+                x['name']['text'] = name
+                x['held']['text'] = '%d/$%.2f' % (shares,price)
+                x['vals'] = {'name': name, 'shares': shares, 'price': price}
 
     def build_graph_month(self, prices_dates, growing_graph_size=None):
 
@@ -248,7 +289,7 @@ class StockWidgets(object):
         min_w = 10
         min_h = 5
         max_w = graph.winfo_width() - min_w
-        max_h = graph.winfo_height() - 15
+        max_h = graph_height - 15
         line_width = 1
 
         low_line = graph.create_line(
@@ -301,7 +342,7 @@ class StockWidgets(object):
             if count in line_repeat:
                 # print count
                 vertical_line = graph.create_line(
-                    x, graph.winfo_height(), x, 0, 
+                    x, graph_height, x, min_h, 
                     fill=time_line_color, width=1, tags='high'
                 )
 
@@ -335,6 +376,8 @@ class StockMonitorUI(object):
         self.root.grid()
         self.create_header()
 
+        self.toggle = True
+
 
     def create_header(self):
 
@@ -353,23 +396,34 @@ class StockMonitorUI(object):
         self.root.percent_change = Label(self.root, text='week', pady=pady, bg=bg)
         self.root.percent_change.grid(row=0, column=3, sticky=N+E+S+W)
 
+        self.root.percent_change = Label(self.root, text='earnings', pady=pady, bg=bg)
+        self.root.percent_change.grid(row=0, column=4, columnspan=3, sticky=N+E+S+W)
+
     def create_row(self, symbol, price, change, percent_change):
 
         self.row += 1
-        
-        graph_height = 100
-        self.root.symbol = Label(self.root, text=symbol, fg=text_color)
+
+        configs = {
+            'fg': text_color,
+            'bg': background_color_1 if self.toggle else background_color_2
+        }
+
+        self.toggle = not self.toggle
+
+        bold = tkFont.Font(weight='bold')
+
+        self.root.symbol = Label(self.root, text=symbol, font=bold, **configs)
         self.root.symbol.grid(row=self.row, column=0, rowspan=3, sticky=N+E+S+W)
         self.root.grid_columnconfigure(0, weight=0)
 
-        self.root.price = Label(self.root, text=price, fg=text_color)
+        self.root.price = Label(self.root, text=price, anchor=S, font=bold, **configs)
         self.root.price.grid(row=self.row, column=1, sticky=N+E+S+W)
         self.root.grid_columnconfigure(1, weight=0)
 
-        self.root.change = Label(self.root, text=change, fg=text_color)
+        self.root.change = Label(self.root, text=change, **configs)
         self.root.change.grid(row=self.row+1, column=1, sticky=N+E+S+W)
 
-        self.root.percent_change = Label(self.root, text=percent_change, fg=text_color)
+        self.root.percent_change = Label(self.root, text=percent_change, anchor=N, **configs)
         self.root.percent_change.grid(row=self.row+2, column=1, sticky=N+E+S+W)
 
         # self.root.day_range = Label(self.root, text=day_range)
@@ -378,14 +432,32 @@ class StockMonitorUI(object):
         # self.root.week_range = Label(self.root, text=week_range)
         # self.root.week_range.grid(row=self.row, column=5, sticky=N+E+S+W)
 
-        self.root.graph_day = Canvas(height=graph_height, highlightthickness=0)
-        self.root.graph_day.grid(row=self.row, column=2, rowspan=3, sticky=N+E+S+W)
+        configs.pop('fg')
 
-        self.root.graph_week = Canvas(height=graph_height, highlightthickness=0)
-        self.root.graph_week.grid(row=self.row, column=3, rowspan=3, sticky=N+E+S+W)
+        self.root.graph_day = Canvas(height=graph_height, highlightthickness=0, **configs)
+        self.root.graph_day.grid(row=self.row, column=2, rowspan=3, pady=5, sticky=N+E+S+W)
+
+        self.root.graph_week = Canvas(height=graph_height, highlightthickness=0, **configs)
+        self.root.graph_week.grid(row=self.row, column=3, rowspan=3, pady=5, sticky=N+E+S+W)
 
         # self.root.graph_month = Canvas(height=graph_height)
         # self.root.graph_month.grid(columnspan=2, row=self.row+1, column=4, sticky=N+E+S+W)
+
+        # earnings_widgets = []
+        # for x in range(0,2):
+        #     name = Label(self.root, height=graph_height, fg=text_color, **configs)
+        #     name.grid(row=self.row+x, column=4, sticky=N+E+S+W)
+        #     name['text'] = 'hi'
+        #     print 'here we are', self.row+x
+        #     print self.row+x
+        #     held = Label(self.root, height=graph_height, fg=text_color, **configs)
+        #     held.grid(row=self.row+x, column=5, sticky=N+E+S+W)
+        #     net = Label(self.root, height=graph_height, fg=text_color, **configs)
+        #     net.grid(row=self.row+x, column=6, sticky=N+E+S+W)
+
+        #     earnings_widgets.append({'name': name, 'held': held, 'net': net})
+        
+        self.root.grid_columnconfigure(4, weight=0)
 
         sw = StockWidgets(self.row, self.root.symbol, self.root.price, self.root.change, 
                           self.root.percent_change, self.root.graph_day, self.root.graph_week)
@@ -414,12 +486,13 @@ def thread_controller(ui):
 
 if __name__ == '__main__':
     root = Tk()
+    root['bg'] = background_color_1
     ui = StockMonitorUI(root)
     a = root.after(50, thread_controller, ui)
 
     smr = StockMonitorRequests(ui, key)
     smr.start_stock_thread('MSFT')
-    smr.start_stock_thread('ATVI')
+    smr.start_stock_thread('ATVI', earnings=[('caleb', 19, 38.35)])
     smr.start_stock_thread('NTDOY')
     smr.start_stock_thread('SNE')
 
