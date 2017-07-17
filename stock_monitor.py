@@ -7,6 +7,7 @@ import copy
 import Queue
 import datetime
 import colorsys
+import HTMLParser
 key = 'H29RZIPMQRR1LCH9'
 
 import json
@@ -31,6 +32,7 @@ background_color_2 = '#080d14'
 text_color = '#cccccc'
 
 graph_height = 100
+ticker_height = 15
 
 class StockMonitorRequests(object):
 
@@ -74,7 +76,7 @@ class StockMonitorRequests(object):
         ct = datetime.datetime.strptime(interval_data[-1][0], time_fmt)
 
         min_day = datetime.datetime(year=ct.year, month=ct.month, day=ct.day) - datetime.timedelta(days=days)
-
+        print min_day
         interval_data = [ d for d in interval_data if datetime.datetime.strptime(d[0], time_fmt) > min_day ]
 
         avg = lambda d: round((float(d[1]['2. high']) + float(d[1]['3. low'])) / 2, 2)
@@ -84,7 +86,31 @@ class StockMonitorRequests(object):
 
         return interval_data
 
+    def get_ticker_msgs(self, symbol):
+        try:
+            r = requests.get(url='https://api.stocktwits.com/api/2/streams/symbol/%s.json' % symbol)
+            
+            messages = []
+            for m in r.json().get('messages', [{'error': 'error'}]):
 
+                if 'links' in m:
+                    continue
+                else:
+                    messages.append('%s: %s' % (m['user']['username'], m['body'].replace('\n', ' ')))
+
+
+
+            p = HTMLParser.HTMLParser()
+            ticker_msgs = '  ...  '.join(messages)
+
+            ticker_msgs = ticker_msgs.encode('ascii', 'replace')
+            ticker_msgs = p.unescape(ticker_msgs)
+
+        except Exception as e:
+            print e
+            ticker_msgs = ['test', 'test1', 'test3']
+
+        return ticker_msgs
 
     def make_stock_requests(self, symbol, earnings, refresh):
 
@@ -117,7 +143,9 @@ class StockMonitorRequests(object):
                 ui_queue.put((tid, StockWidgets.build_graph_day, 
                              {'prices_dates': day_data,
                               'growing_graph_size': 79}))
-                print len(day_data)
+
+                ticker_msgs = self.get_ticker_msgs(symbol)
+                ui_queue.put((tid, StockWidgets.build_news_ticker, {'messages': ticker_msgs}))
 
                 # for x in earnings:
                 #     ui_queue.put((tid, StockWidgets.build_earnings, 
@@ -160,11 +188,17 @@ class StockMonitorRequests(object):
                 )
 
                 if datetime.datetime.today() > prev_time + datetime.timedelta(seconds=300):
-                    prev_time = prev_time + datetime.timedelta(seconds=300)
-                    day_data = self.get_graph_data(symbol, interval='5min', days=1, time_format='%I')
+                    prev_time = datetime.datetime.today()
+                    day_data = self.get_graph_data(symbol, interval='5min', days=0, time_format='%I')
                     ui_queue.put((tid, StockWidgets.build_graph_day, 
                                  {'prices_dates': day_data,
                                   'growing_graph_size': 79}))
+
+                if update_ticker_please[tid] is True:
+                    update_ticker_please[tid] = False
+                    ticker_msgs = self.get_ticker_msgs(symbol)
+                    ui_queue.put((tid, StockWidgets.build_news_ticker, {'messages': ticker_msgs}))
+
             except Exception as e:
                 print e
                 pass
@@ -175,7 +209,7 @@ class StockMonitorRequests(object):
 class StockWidgets(object):
 
     def __init__(self, row, symbol, price, change, percent_change,
-                 graph_day, graph_week, earnings=None, graph_month=None):
+                 graph_day, graph_week, news_ticker, earnings=None, graph_month=None):
         
         self.row = row
         self.symbol = symbol
@@ -186,9 +220,11 @@ class StockWidgets(object):
         self.graph_week = graph_week
         self.graph_month = graph_month
 
+        self.news_ticker = news_ticker
+
         self.earnings = earnings
 
-        self.graph_day.update()
+        self.graph_day.update_idletasks()
         self.prev_width_day = self.graph_day.winfo_width()
         self.prev_width_week = self.graph_day.winfo_width()
         # self.prev_width_month = self.graph_day.winfo_width()
@@ -196,6 +232,8 @@ class StockWidgets(object):
         self.graph_day.bind('<Configure>', self.scale_day)
         self.graph_week.bind('<Configure>', self.scale_week)
         # self.graph_month.bind('<Configure>', self.scale_month)
+
+        self.tid = None
 
     def scale_day(self, event):
         self.prev_width_day = self._scale_graph(event, self.prev_width_day)
@@ -260,7 +298,57 @@ class StockWidgets(object):
         self.percent_change['fg'] = color
         # self.graph_day['bg'] = color 
         # self.graph_week['bg'] = color 
-        self.symbol.update()
+        self.symbol.update_idletasks()     
+
+    def build_news_ticker(self, messages=['test0', 'test1', 'test2']):
+        # self.news_ticker.delete('all')
+        min_w = 0
+        min_h = 0
+        max_w = self.news_ticker.winfo_width() - min_w
+        max_h = ticker_height
+
+        
+        msgs = enumerate(messages.split(' '))
+
+        curr_str = msgs.next()[1]
+        font = tkFont.Font(family="courier", size=13, weight="normal")
+        
+        char_len = font.measure("m")
+        allowed_min_x = -10 * char_len
+        chars_per_update = -1 * (allowed_min_x / char_len)
+
+        self.ticker_string = self.news_ticker.create_text(
+            max_w, max_h, font=font, fill=text_color, anchor=SW, text=curr_str
+        )
+
+        def scroll_ticker(msgs, curr_str):
+
+            try:
+                self.news_ticker.move(self.ticker_string, -1, 0)
+
+                min_x_coor, _, max_x_coor, _ = self.news_ticker.bbox(self.ticker_string)
+                
+                if min_x_coor < allowed_min_x:
+                    curr_str = curr_str[chars_per_update:]
+                    self.news_ticker.move(self.ticker_string, -1 * allowed_min_x, 0)
+                    self.news_ticker.itemconfig(self.ticker_string, text=curr_str)
+                    min_x_coor, _, max_x_coor, _ = self.news_ticker.bbox(self.ticker_string)
+                
+                if max_x_coor < max_w:
+                    curr_str = '%s %s' % (curr_str, msgs.next()[1])
+                    self.news_ticker.itemconfig(self.ticker_string, text=curr_str)
+            except:
+                print 'BOOYEAH BABY'
+                self.news_ticker.delete('all')
+                self.news_ticker.update_idletasks()
+                update_ticker_please[self.tid] = True
+                return
+            else:
+                self.news_ticker.after(30, scroll_ticker, msgs, curr_str)
+
+
+
+        self.news_ticker.after(30, scroll_ticker, msgs, curr_str)
 
     def build_earnings(self, name, shares, price):
 
@@ -285,7 +373,7 @@ class StockWidgets(object):
     def _build_graph(self, graph, prices_dates, growing_graph_size=None):
         
         graph.delete('all')
-        graph.update()
+        graph.update_idletasks()
         min_w = 10
         min_h = 5
         max_w = graph.winfo_width() - min_w
@@ -435,10 +523,13 @@ class StockMonitorUI(object):
         configs.pop('fg')
 
         self.root.graph_day = Canvas(height=graph_height, highlightthickness=0, **configs)
-        self.root.graph_day.grid(row=self.row, column=2, rowspan=3, pady=5, sticky=N+E+S+W)
+        self.root.graph_day.grid(row=self.row, column=2, rowspan=3, ipady=5, sticky=N+E+S+W)
 
         self.root.graph_week = Canvas(height=graph_height, highlightthickness=0, **configs)
-        self.root.graph_week.grid(row=self.row, column=3, rowspan=3, pady=5, sticky=N+E+S+W)
+        self.root.graph_week.grid(row=self.row, column=3, rowspan=3, ipady=5, sticky=N+E+S+W)
+
+        self.root.news_ticker = Canvas(height=ticker_height, highlightthickness=0, **configs)
+        self.root.news_ticker.grid(row=self.row+3, column=0, columnspan=5, ipady=5, sticky=N+E+S+W)
 
         # self.root.graph_month = Canvas(height=graph_height)
         # self.root.graph_month.grid(columnspan=2, row=self.row+1, column=4, sticky=N+E+S+W)
@@ -460,24 +551,33 @@ class StockMonitorUI(object):
         self.root.grid_columnconfigure(4, weight=0)
 
         sw = StockWidgets(self.row, self.root.symbol, self.root.price, self.root.change, 
-                          self.root.percent_change, self.root.graph_day, self.root.graph_week)
+                          self.root.percent_change, self.root.graph_day, self.root.graph_week,
+                          self.root.news_ticker)
 
-        self.row += 3
+        self.row += 4
         
         return sw
 
 ui_queue = Queue.Queue()
 stock_widgets = {}
+update_ticker_please = {}
 
 def thread_controller(ui):
     try:
+
         tid, func, kwargs = ui_queue.get_nowait()
 
+
         if func.__name__ == 'create_row':
+    
             stock_row = func(ui, **kwargs)
             stock_widgets[tid] = stock_row
+            stock_widgets[tid].tid = tid
+            update_ticker_please[tid] = False
         else:
+    
             func(stock_widgets[tid], **kwargs)
+    
     except Queue.Empty:
         pass
 
